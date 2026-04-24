@@ -1,9 +1,16 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { fade, fly, slide } from 'svelte/transition';
-  import { ArrowRight, User, MapPin, Phone, Store, Gamepad2, AlertCircle, Loader2 } from 'lucide-svelte';
+  import { 
+    ArrowRight, User, MapPin, Phone, Store, 
+    Gamepad2, AlertCircle, Loader2, Camera, X 
+  } from 'lucide-svelte';
+  
+  // Internal Imports
   import { NAIROBI_LOCATIONS } from '$lib/constants';
-  import SelfieCapture from '../lib/components/SelfieCapture.svelte';
-  import ShopRegister from '../lib/components/ShopRegister.svelte';
+  import { saveToOutbox } from '$lib/offlineStore';
+  import SelfieCapture from '$lib/components/SelfieCapture.svelte';
+  import ShopRegister from '$lib/components/ShopRegister.svelte';
 
   // 1. Navigation & Global UI State
   let isStarted = $state(false);
@@ -11,6 +18,7 @@
   let currentStep = $state(1); 
   let isSubmitting = $state(false);
   let errorMessage = $state<string | null>(null);
+  let successMessage = $state<string | null>(null);
 
   // 2. Gamer Form Data State
   let gamerName = $state('');
@@ -22,13 +30,27 @@
   // 3. Derived Wards List
   let availableWards = $derived(selectedConstituency ? NAIROBI_LOCATIONS[selectedConstituency] : []);
 
-  // Effect: Reset ward if constituency changes
+  // Reset ward if constituency changes
   $effect(() => {
     if (selectedConstituency) selectedWard = '';
   });
 
-  function handleCapture(imgData: string) {
-    selfieImage = imgData;
+  // Helper: Image Compression
+  async function compressImage(base64Str: string): Promise<string> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        const scaleSize = MAX_WIDTH / img.width;
+        canvas.width = MAX_WIDTH;
+        canvas.height = img.height * scaleSize;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
+      };
+    });
   }
 
   // Helper: Normalize M-Pesa (07... -> 254...)
@@ -39,11 +61,19 @@
     return clean;
   }
 
+  function handleCapture(imgData: string) {
+    selfieImage = imgData;
+  }
+
   async function handleSubmit() {
+    if (!selfieImage) return;
+    
     isSubmitting = true;
     errorMessage = null;
 
-    // Normalization & Trimming (The "Dirty Work" for the backend devs)
+    // 1. Compress Image before saving/sending
+    const compressedSelfie = await compressImage(selfieImage);
+
     const payload = {
       role: userRole,
       name: gamerName.trim(),
@@ -52,53 +82,74 @@
         ward: selectedWard
       },
       phone: normalizeMpesa(mpesaNumber),
-      image: selfieImage
+      image: compressedSelfie,
+      timestamp: new Date().toISOString()
     };
 
     try {
-      // Simulate API call delay
-      await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          // 10% chance to simulate a network error for testing
-          Math.random() > 0.9 ? reject() : resolve(true);
-        }, 2000);
+      // 2. Attempt Live Upload
+      const response = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
 
-      console.log("Payload sent to backend:", payload);
-      alert("Registration Successful!");
-      
-      // Reset flow
-      isStarted = false;
-      currentStep = 1;
-      gamerName = '';
-      mpesaNumber = '';
-      selfieImage = null;
+      if (!response.ok) throw new Error('Server unreachable');
 
+      successMessage = "Registration Successful!";
+      resetForm();
     } catch (err) {
-      errorMessage = "Connection failed. Please check your internet and try again.";
-      // Auto-hide error after 5 seconds
-      setTimeout(() => errorMessage = null, 5000);
+      // 3. BACKUP: Offline Save
+      await saveToOutbox(payload);
+      errorMessage = "Network weak! Data saved locally and will upload when you're back online.";
+      
+      // Still reset form so the user can continue their day
+      setTimeout(() => {
+          resetForm();
+          errorMessage = null;
+      }, 4000);
     } finally {
       isSubmitting = false;
     }
+  }
+
+  function resetForm() {
+    isStarted = false;
+    currentStep = 1;
+    gamerName = '';
+    mpesaNumber = '';
+    selfieImage = null;
+    selectedConstituency = '';
+    selectedWard = '';
   }
 </script>
 
 {#if errorMessage}
   <div 
-    fixed top-6 right-6 z-50
     class="fixed top-6 left-1/2 -translate-x-1/2 md:left-auto md:right-6 md:translate-x-0 z-[100] w-[90%] md:w-96"
     transition:fly={{ y: -20, duration: 300 }}
   >
     <div class="bg-red-600 text-white p-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-white/20">
       <AlertCircle size={24} />
       <p class="text-sm font-bold">{errorMessage}</p>
-      <button onclick={() => errorMessage = null} class="ml-auto opacity-50 hover:opacity-100">×</button>
+      <button onclick={() => errorMessage = null} class="ml-auto opacity-50 hover:opacity-100 text-2xl">×</button>
     </div>
   </div>
 {/if}
 
-<main class="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-center">
+{#if successMessage}
+  <div 
+    class="fixed top-6 left-1/2 -translate-x-1/2 md:left-auto md:right-6 md:translate-x-0 z-[100] w-[90%] md:w-96"
+    transition:fly={{ y: -20, duration: 300 }}
+  >
+    <div class="bg-safaricom-green text-black p-4 rounded-2xl shadow-2xl flex items-center gap-4">
+      <div class="bg-black/10 p-1 rounded-full text-black"><ArrowRight size={20} /></div>
+      <p class="text-sm font-black uppercase tracking-tight">{successMessage}</p>
+    </div>
+  </div>
+{/if}
+
+<main class="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center overflow-x-hidden">
   
   {#if !isStarted}
     <div class="max-w-4xl w-full space-y-10" in:fade={{ duration: 800 }} out:fly={{ y: -50, duration: 500 }}>
@@ -106,17 +157,17 @@
         SAFARICOM <span class="text-safaricom-green">GAMING HUB</span>
       </h1>
 
-      <div class="relative rounded-3xl overflow-hidden shadow-2xl border-4 border-white/10 group bg-zinc-800">
+      <div class="relative rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white/5 group bg-zinc-900">
         <div class="w-full aspect-video flex items-center justify-center relative">
            <img 
               src="https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&q=80&w=1200" 
-              alt="Gaming Tournament" 
+              alt="Gaming Hub" 
               class="w-full h-full object-cover opacity-60 group-hover:scale-105 transition-transform duration-700"
-              loading="eager" 
             />
-           <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
-           <div class="absolute bottom-6 left-6 text-left">
-              <span class="bg-safaricom-red text-white text-xs font-bold px-3 py-1 rounded-full uppercase">Live Finals @ Tric Cafe</span>
+           <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent"></div>
+           <div class="absolute bottom-8 left-8 text-left">
+              <span class="bg-red-600 text-white text-[10px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest">Nairobi Circuit Live</span>
+              <h2 class="text-white text-2xl font-black mt-2 uppercase italic tracking-tighter">Kayole • Embakasi • Langata</h2>
            </div>
         </div>
       </div>
@@ -124,74 +175,73 @@
       <div class="pt-6">
         <button 
           onclick={() => isStarted = true}
-          class="inline-flex items-center gap-3 bg-safaricom-green text-white text-xl md:text-3xl font-black py-6 px-16 rounded-2xl
-                 shadow-[0_10px_0_#228035] hover:translate-y-[5px] hover:shadow-[0_5px_0_#228035] 
-                 active:translate-y-[10px] active:shadow-none transition-all duration-150 uppercase tracking-widest"
+          class="group relative inline-flex items-center gap-4 bg-safaricom-green text-black text-xl md:text-3xl font-black py-7 px-16 rounded-[2rem]
+                 hover:scale-105 transition-all duration-300 uppercase tracking-tighter shadow-[0_20px_40px_rgba(0,230,0,0.25)]"
         >
-          Get Started <ArrowRight size={32} />
+          Get Started <ArrowRight size={32} class="group-hover:translate-x-2 transition-transform" />
         </button>
-        <p class="mt-8 text-sm text-gray-400 font-bold uppercase tracking-widest">Nairobi Circuit • 17 Constituencies • One Beast</p>
+        <p class="mt-10 text-[10px] text-gray-500 font-black uppercase tracking-[0.4em]">One Circuit • One Beast • One Hub</p>
       </div>
     </div>
 
   {:else}
     <div class="max-w-xl w-full flex flex-col gap-6" in:fly={{ y: 50, duration: 800 }}>
       
-      <div class="flex gap-2 bg-slate-800 p-1 rounded-2xl border border-white/5 {isSubmitting ? 'opacity-50 pointer-events-none' : ''}">
+      <div class="flex gap-2 bg-slate-900 p-1.5 rounded-[1.5rem] border border-white/5 {isSubmitting ? 'opacity-30 pointer-events-none' : ''}">
         <button 
           onclick={() => { userRole = 'gamer'; currentStep = 1; }}
-          class="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold uppercase text-xs tracking-widest transition-all
-          {userRole === 'gamer' ? 'bg-safaricom-green text-white shadow-lg' : 'text-gray-500 hover:text-white'}"
+          class="flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all
+          {userRole === 'gamer' ? 'bg-safaricom-green text-black shadow-lg' : 'text-gray-500 hover:text-white'}"
         >
-          <Gamepad2 size={16} /> I'm a Gamer
+          <Gamepad2 size={16} /> Gamer
         </button>
         <button 
-          onclick={() => { userRole = 'shop'; errorMessage = null; }}
-          class="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold uppercase text-xs tracking-widest transition-all
-          {userRole === 'shop' ? 'bg-safaricom-green text-white shadow-lg' : 'text-gray-500 hover:text-white'}"
+          onclick={() => { userRole = 'shop'; }}
+          class="flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all
+          {userRole === 'shop' ? 'bg-safaricom-green text-black shadow-lg' : 'text-gray-500 hover:text-white'}"
         >
-          <Store size={16} /> I'm a Shop Owner
+          <Store size={16} /> Shop Owner
         </button>
       </div>
 
       {#if userRole === 'gamer'}
-        <div class="bg-slate-800 p-8 rounded-3xl border border-white/10 shadow-2xl relative overflow-hidden">
+        <div class="bg-slate-900 p-8 md:p-10 rounded-[2.5rem] border border-white/5 shadow-2xl relative overflow-hidden">
           
           {#if isSubmitting}
-            <div class="absolute inset-0 bg-slate-900/80 z-20 backdrop-blur-sm flex flex-col items-center justify-center gap-4" transition:fade>
-              <div class="w-12 h-12 border-4 border-safaricom-green border-t-transparent rounded-full animate-spin"></div>
-              <p class="text-white font-black uppercase tracking-widest">Verifying Identity...</p>
+            <div class="absolute inset-0 bg-black/80 z-20 backdrop-blur-md flex flex-col items-center justify-center gap-4" transition:fade>
+              <Loader2 size={48} class="text-safaricom-green animate-spin" />
+              <p class="text-white font-black uppercase tracking-widest text-xs">Processing Identity...</p>
             </div>
           {/if}
 
-          <div class="flex justify-between mb-8 px-4">
+          <div class="flex justify-between mb-10 px-4">
             <div class="flex flex-col items-center gap-2">
-                <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold {currentStep === 1 ? 'bg-safaricom-green text-white' : 'bg-green-900 text-green-300'}">1</div>
-                <span class="text-[10px] uppercase font-bold text-gray-400">Info</span>
+                <div class="w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm {currentStep === 1 ? 'bg-safaricom-green text-black' : 'bg-slate-800 text-gray-500'}">01</div>
+                <span class="text-[9px] uppercase font-black tracking-widest text-gray-500">Info</span>
             </div>
-            <div class="h-[2px] flex-1 bg-white/10 mt-4 mx-2"></div>
+            <div class="h-[1px] flex-1 bg-white/5 mt-5 mx-4"></div>
             <div class="flex flex-col items-center gap-2">
-                <div class="w-8 h-8 rounded-full flex items-center justify-center font-bold {currentStep === 2 ? 'bg-safaricom-green text-white' : 'bg-slate-700 text-gray-400'}">2</div>
-                <span class="text-[10px] uppercase font-bold text-gray-400">Selfie</span>
+                <div class="w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm {currentStep === 2 ? 'bg-safaricom-green text-black' : 'bg-slate-800 text-gray-500'}">02</div>
+                <span class="text-[9px] uppercase font-black tracking-widest text-gray-500">Identity</span>
             </div>
           </div>
 
           {#if currentStep === 1}
-            <div class="text-left mb-8">
-              <h2 class="text-3xl font-black text-white uppercase">Gamer <span class="text-safaricom-green">Info</span></h2>
-              <p class="text-gray-400 text-sm">Join the Nairobi circuit.</p>
+            <div class="text-left mb-8" in:fade>
+              <h2 class="text-4xl font-black text-white uppercase italic tracking-tighter">Gamer <span class="text-safaricom-green">Info</span></h2>
+              <p class="text-gray-500 text-sm font-medium">Please provide your official registration details.</p>
             </div>
 
             <div class="space-y-6 text-left" in:fade>
               <div class="space-y-2">
-                <label for="gamerName" class="text-xs font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2"><User size={14} /> Full Name</label>
-                <input id="gamerName" bind:value={gamerName} type="text" placeholder="Enter Official Name" class="w-full bg-slate-900 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-safaricom-green" />
+                <label for="gamerName" class="text-[10px] font-black uppercase tracking-widest text-gray-500 flex items-center gap-2"><User size={12} /> Full Name</label>
+                <input id="gamerName" bind:value={gamerName} type="text" placeholder="Enter Full Name" class="w-full bg-black/40 border border-white/5 rounded-2xl p-5 text-white focus:ring-2 focus:ring-safaricom-green transition-all" />
               </div>
 
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="grid grid-cols-2 gap-4">
                 <div class="space-y-2">
-                  <label for="constituency" class="text-xs font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2"><MapPin size={14} /> Constituency</label>
-                  <select id="constituency" bind:value={selectedConstituency} class="w-full bg-slate-900 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-safaricom-green">
+                  <label for="constituency" class="text-[10px] font-black uppercase tracking-widest text-gray-500 flex items-center gap-2"><MapPin size={12} /> Constituency</label>
+                  <select id="constituency" bind:value={selectedConstituency} class="w-full bg-black/40 border border-white/5 rounded-2xl p-5 text-white text-sm">
                     <option value="">Choose...</option>
                     {#each Object.keys(NAIROBI_LOCATIONS) as consty}
                       <option value={consty}>{consty}</option>
@@ -199,9 +249,9 @@
                   </select>
                 </div>
                 <div class="space-y-2">
-                  <label for="ward" class="text-xs font-bold uppercase tracking-widest text-gray-400">Ward</label>
-                  <select id="ward" bind:value={selectedWard} disabled={!selectedConstituency} class="w-full bg-slate-900 border-none rounded-xl p-4 text-white disabled:opacity-30">
-                    <option value="">Choose Ward...</option>
+                  <label for="ward" class="text-[10px] font-black uppercase tracking-widest text-gray-500">Ward</label>
+                  <select id="ward" bind:value={selectedWard} disabled={!selectedConstituency} class="w-full bg-black/40 border border-white/5 rounded-2xl p-5 text-white text-sm disabled:opacity-20">
+                    <option value="">Select Ward...</option>
                     {#each availableWards as ward}
                       <option value={ward}>{ward}</option>
                     {/each}
@@ -210,44 +260,45 @@
               </div>
 
               <div class="space-y-2">
-                <label for="mpesa" class="text-xs font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2"><Phone size={14} /> M-Pesa Number</label>
-                <input id="mpesa" bind:value={mpesaNumber} type="tel" placeholder="07XXXXXXXX" class="w-full bg-slate-900 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-safaricom-green" />
+                <label for="mpesa" class="text-[10px] font-black uppercase tracking-widest text-gray-500 flex items-center gap-2"><Phone size={12} /> M-Pesa Number</label>
+                <input id="mpesa" bind:value={mpesaNumber} type="tel" placeholder="07XXXXXXXX" class="w-full bg-black/40 border border-white/5 rounded-2xl p-5 text-white focus:ring-2 focus:ring-safaricom-green" />
               </div>
 
               <button 
                 onclick={() => currentStep = 2}
                 disabled={!gamerName || !selectedWard || !mpesaNumber}
-                class="w-full bg-safaricom-green text-white font-black py-5 rounded-2xl shadow-lg hover:bg-green-700 transition-all uppercase tracking-widest disabled:opacity-50"
+                class="w-full bg-safaricom-green text-black font-black py-6 rounded-2xl shadow-xl hover:brightness-110 active:scale-95 transition-all uppercase text-sm tracking-widest disabled:opacity-30 mt-4"
               >
-                Next: Identity Check
+                Proceed to Verification
               </button>
             </div>
+
           {:else}
             <div class="text-left mb-8" in:fade>
-              <h2 class="text-3xl font-black text-white uppercase">Selfie <span class="text-safaricom-green">Verify</span></h2>
-              <p class="text-gray-400 text-sm">Face the camera in good lighting.</p>
+              <h2 class="text-4xl font-black text-white uppercase italic tracking-tighter">Selfie <span class="text-safaricom-green">Verify</span></h2>
+              <p class="text-gray-500 text-sm">Position your face within the frame.</p>
             </div>
             
             <SelfieCapture onCapture={handleCapture} />
 
-            <div class="mt-8 space-y-4">
+            <div class="mt-10 space-y-4">
                 <button 
                   onclick={handleSubmit} 
                   disabled={!selfieImage || isSubmitting} 
-                  class="w-full bg-safaricom-green text-white font-black py-5 rounded-2xl shadow-lg uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-3"
+                  class="w-full bg-safaricom-green text-black font-black py-6 rounded-2xl shadow-xl uppercase tracking-widest disabled:opacity-30 flex items-center justify-center gap-3 text-sm"
                 >
                   {#if isSubmitting}
-                    <Loader2 class="animate-spin" /> Sending...
+                    <Loader2 class="animate-spin" size={20} /> Encrypting...
                   {:else}
-                    Submit Registration
+                    Complete Registration
                   {/if}
                 </button>
                 <button 
                   onclick={() => currentStep = 1} 
                   disabled={isSubmitting}
-                  class="text-gray-500 text-xs font-bold uppercase w-full hover:text-white transition-colors disabled:hidden"
+                  class="text-gray-500 text-[10px] font-black uppercase w-full hover:text-white transition-colors"
                 >
-                  Back to Info
+                  Change Info
                 </button>
             </div>
           {/if}
@@ -256,9 +307,9 @@
       {:else}
         <div class="relative">
           {#if isSubmitting}
-             <div class="absolute inset-0 bg-slate-900/80 z-20 backdrop-blur-sm flex flex-col items-center justify-center gap-4 rounded-3xl" transition:fade>
-              <div class="w-12 h-12 border-4 border-safaricom-green border-t-transparent rounded-full animate-spin"></div>
-              <p class="text-white font-black uppercase tracking-widest">Saving Shop Profile...</p>
+             <div class="absolute inset-0 bg-black/80 z-20 backdrop-blur-md flex flex-col items-center justify-center gap-4 rounded-[2.5rem]" transition:fade>
+              <Loader2 size={48} class="text-safaricom-green animate-spin" />
+              <p class="text-white font-black uppercase tracking-widest text-xs">Finalizing Business Profile...</p>
             </div>
           {/if}
           <ShopRegister />
@@ -268,10 +319,22 @@
       <button 
         onclick={() => isStarted = false} 
         disabled={isSubmitting}
-        class="text-gray-600 text-[10px] font-bold uppercase tracking-tighter hover:text-white transition-colors disabled:opacity-0"
+        class="mt-4 text-gray-700 text-[10px] font-black uppercase tracking-[0.3em] hover:text-safaricom-red transition-colors disabled:opacity-0"
       >
-        Exit Registration
+        Discard & Exit
       </button>
     </div>
   {/if}
 </main>
+
+<style>
+  :global(.text-safaricom-green) { color: #00e600; }
+  :global(.bg-safaricom-green) { background-color: #00e600; }
+  :global(.bg-safaricom-red) { background-color: #e40404; }
+
+  /* Smooth scroll for the entire app */
+  :global(html) {
+    scroll-behavior: smooth;
+    background: #020617;
+  }
+</style>
